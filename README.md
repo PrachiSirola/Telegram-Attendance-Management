@@ -2,8 +2,6 @@
 
 A multi-tenant employee attendance platform where employees punch in/out, request leave, and log activity **entirely through Telegram** — while admins manage everything from a full-featured web dashboard.
 
-**Live app:** [orlix.online](https://orlix.online)
-
 ---
 
 ## 📖 Overview
@@ -15,6 +13,36 @@ Key design principles baked into the codebase:
 - **Multi-tenant by organization** — every record is scoped to an `organizationId`; a Super Admin can view/manage every organization, a regular Admin only their own.
 - **Organization-level configurability** — timezone, shift/break timings, Sunday-off automation, office geofence, and punch-in verification (location/selfie) are all per-organization settings, not global.
 - **Role-based access control** — Super Admin vs. Admin, with granular permission flags (e.g. an Admin can be individually granted the right to edit specific organization settings) enforced on both frontend and backend.
+
+---
+
+## 🏗️ Architecture
+
+```mermaid
+flowchart LR
+    subgraph Employee_Side["👤 Employee side"]
+        EMP[Employee] -->|Telegram app| BOT["🤖 Telegram Bot<br/>(Telegraf)"]
+    end
+
+    subgraph Admin_Side["🧑‍💼 Admin side"]
+        ADM[Admin / Super Admin] -->|Browser| FE["💻 React Dashboard<br/>Vite · MUI · Redux Toolkit"]
+    end
+
+    BOT -->|REST calls| API["🚀 Express API<br/>/api/v1"]
+    FE -->|Axios REST| API
+    FE <-.->|Socket.IO realtime| API
+
+    API --> DB[("🍃 MongoDB<br/>Mongoose ODM")]
+    API --> CLD[("☁️ Cloudinary<br/>selfies & profile photos")]
+    API --> SMTP["✉️ SMTP<br/>password-reset emails"]
+    API --> CRON["⏰ node-cron<br/>daily reports · absentee checks"]
+
+    CRON -.->|scheduled Telegram reports| BOT
+```
+
+- **Backend** — a single Express app (`backend/app.js`) wires REST routes, Socket.IO, and the Telegram bot together; `backend/server.js` is the process entry point.
+- **Frontend** — a React SPA that talks to the same backend over REST (`/api/v1`) and realtime Socket.IO events.
+- **Bot** — Telegraf-based, runs either long-polling (dev) or webhook mode (production), sharing the same Express app and business-logic services as the REST API.
 
 ---
 
@@ -32,6 +60,54 @@ Key design principles baked into the codebase:
 - 🔐 **Two-factor authentication (TOTP)** for admin accounts, with encrypted secrets and backup codes.
 - 🛡️ **Granular admin permissions** — Manage Admin lets a Super Admin grant a regular Admin narrow rights (e.g. editing an organization's punch-in feature toggles) without handing over full organization control.
 - 🌍 **Per-organization timezone support** — attendance days, shift calculations, and reports all respect each organization's own IANA timezone.
+
+---
+
+## 🧭 How Punch-In Works
+
+A walkthrough of the bot's core flow — selfie and location steps only run if the organization has them enabled.
+
+```mermaid
+sequenceDiagram
+    actor E as Employee (Telegram)
+    participant BOT as Telegram Bot
+    participant API as Backend API
+    participant DB as MongoDB
+    participant CLD as Cloudinary
+    participant FE as Admin Dashboard
+
+    E->>BOT: Tap "📍 Punch In"
+    BOT->>API: Fetch organization settings
+    API->>DB: Read imageCaptureEnabled / locationSharingEnabled
+    DB-->>API: Toggle values
+    API-->>BOT: Settings
+
+    opt Selfie capture enabled
+        BOT->>E: "Send a selfie"
+        E->>BOT: 📷 Photo
+        BOT->>CLD: Upload selfie
+        CLD-->>BOT: Secure URL
+    end
+
+    opt Location sharing enabled
+        BOT->>E: "Share your location"
+        E->>BOT: 📍 Location (lat/lng)
+    end
+
+    BOT->>API: POST /attendance/punch-in
+    API->>DB: Check office geofence (if configured)
+    API->>DB: Check selfie hash for reuse
+
+    alt Outside geofence OR selfie reused
+        API-->>BOT: 400 Rejected
+        BOT-->>E: ❌ "Punch-in rejected"
+    else Valid
+        API->>DB: Create Attendance record
+        API-->>BOT: 200 Success
+        BOT-->>E: ✅ "Punched in!"
+        API-)FE: Socket.IO "attendance:updated"
+    end
+```
 
 ---
 
@@ -92,6 +168,57 @@ Key design principles baked into the codebase:
 │
 └── docs/
     └── API.md                # REST API reference
+```
+
+---
+
+## 🗂️ Core Data Model
+
+```mermaid
+erDiagram
+    ORGANIZATION ||--o{ ADMIN : "has"
+    ORGANIZATION ||--o{ EMPLOYEE : "has"
+    ORGANIZATION ||--o{ ATTENDANCE : "scopes"
+    ORGANIZATION ||--o{ LEAVE : "scopes"
+    EMPLOYEE ||--o{ ATTENDANCE : "punches"
+    EMPLOYEE ||--o{ LEAVE : "requests"
+    ADMIN ||--o{ LEAVE : "approves"
+
+    ORGANIZATION {
+        ObjectId id
+        string name
+        string slug
+        string timezone
+        boolean locationSharingEnabled
+        boolean imageCaptureEnabled
+    }
+    ADMIN {
+        ObjectId id
+        string email
+        string role "super_admin or admin"
+        boolean canEditOrgFeatureToggles
+        boolean twoFactorEnabled
+    }
+    EMPLOYEE {
+        ObjectId id
+        string employeeId
+        string name
+        string telegramChatId
+    }
+    ATTENDANCE {
+        ObjectId id
+        date date
+        string status
+        string selfieHash
+        geo location
+    }
+    LEAVE {
+        ObjectId id
+        string type
+        string status
+        date startDate
+        date endDate
+    }
 ```
 
 ---
@@ -192,14 +319,38 @@ npm run fix:telegram-index  # repair the Telegram-session unique index
 
 ---
 
-## 🌐 Deployment
+## ☁️ Deploying Your Own Copy
 
-The production app is live at **[orlix.online](https://orlix.online)**, deployed on **Render**, with **MongoDB Atlas** as the database and **Cloudinary** for selfie/photo storage.
+This project is built to split cleanly across a **static frontend host** and a **Node backend host** — for example **Vercel** (frontend) + **Render** (backend). No deployment is currently live for this repository; the steps below are for anyone who wants to stand up their own instance.
 
-For your own deployment:
-- Set `NODE_ENV=production` and configure all backend environment variables (above) in your hosting provider's dashboard.
-- Point `TELEGRAM_WEBHOOK_URL` at your deployed backend's public HTTPS URL so Telegram delivers bot updates via webhook instead of polling.
-- Build the frontend with `npm run build` (inside `frontend/`) and serve the resulting `dist/` as a static site, with `API_PROXY_TARGET`/API base URL pointed at your deployed backend.
+### 1. Backend → Render (or any Node host)
+
+1. Push this repository to your own GitHub account.
+2. Create a new **Web Service** on Render, connect your repo, and set the root directory to `backend`.
+3. Build command: `npm install` · Start command: `npm start`.
+4. Add every variable from the **Backend Environment Variables** table above in Render's dashboard (never commit real values to the repo).
+5. Once Render assigns your service a public URL, set `TELEGRAM_WEBHOOK_URL` to that URL so the bot switches from polling to webhook mode automatically (see `backend/bot/telegramBot.js`), and set `FRONTEND_URL` / `CORS_ORIGIN` to your frontend's deployed URL (step below).
+6. Deploy, then confirm `GET /health` returns `{ "ok": true }`.
+
+### 2. Frontend → Vercel (or any static host)
+
+1. Import the same repository into Vercel and set the root directory to `frontend`.
+2. Build command: `npm run build` · Output directory: `dist`.
+3. Because this is a single-page app, add a rewrite so client-side routes survive a browser refresh instead of 404ing:
+
+   ```json
+   {
+     "rewrites": [
+       { "source": "/(.*)", "destination": "/index.html" }
+     ]
+   }
+   ```
+
+4. Point the frontend at your deployed backend in one of two ways:
+   - **Proxy rewrite** — add another rewrite (`"source": "/api/(.*)"` → your backend's `/api/$1`) so the frontend can keep using its relative `/api/v1` base URL.
+   - **Direct calls** — configure the frontend to call your backend's absolute URL directly. If you do this, also point the Socket.IO client at that same absolute URL explicitly, since cross-origin realtime connections need it spelled out rather than assumed to be same-origin.
+5. Set `VITE_DEFAULT_SLUG` if you want a default organization slug pre-filled on login.
+6. Deploy, then confirm the login page loads and a login attempt reaches the backend successfully.
 
 ---
 
@@ -218,6 +369,12 @@ Full endpoint documentation lives in [`docs/API.md`](docs/API.md), covering:
 
 ---
 
+## 👥 Contributing
+
+This is an independent personal project. It isn't currently open to outside contributions, but suggestions and bug reports are welcome via issues.
+
+---
+
 ## 📜 License
 
-This project is **proprietary** and **all rights reserved** by Yogen Infotech. No license is granted for reuse, redistribution, or modification outside of work authorized by the project owner.
+This project is **proprietary** and **all rights reserved** by its author. No license is granted for reuse, redistribution, or modification without permission.
