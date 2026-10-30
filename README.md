@@ -218,18 +218,6 @@ Full endpoint documentation lives in [`docs/API.md`](docs/API.md), covering:
 
 ---
 
-## 👥 Contributing
-
-This is a **private repository** maintained by the **Yogen Infotech** team. It is not currently open to outside contributions.
-
-For team members:
-- Create a feature branch off `main` for any change (`feature/<short-description>` or `fix/<short-description>`).
-- Keep commits focused and descriptive.
-- Open a pull request into `main` for review before merging.
-- Reach out to a project maintainer for repo access or questions.
-
----
-
 ## 📜 License
 
 This project is **proprietary** and **all rights reserved** by Yogen Infotech. No license is granted for reuse, redistribution, or modification outside of work authorized by the project owner.
