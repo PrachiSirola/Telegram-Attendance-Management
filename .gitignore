@@ -1,0 +1,15 @@
+.playwright-mcp/
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Project-level env files
+backend/.env
+backend/.env.*
+frontend/.env
+frontend/.env.*
+
+# Extra local-only config
+*.local
